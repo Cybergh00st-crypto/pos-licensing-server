@@ -1,109 +1,123 @@
+import os
+import threading
+import logging
+import requests
 from flask import Flask, request, jsonify
-import sqlite3
-from datetime import datetime, timedelta
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 app = Flask(__name__)
-DB_NAME = "subscriptions.db"
 
-def init_db():
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS clients (
-            client_id TEXT PRIMARY KEY,
-            branch_name TEXT,
-            expiry_date TEXT
-        )
-    ''')
-    conn.commit()
-    conn.close()
+# التوكن ورابط السيرفر
+TELEGRAM_TOKEN = "8977841816:AAHTSoTngUCO6zUhE-zESC56jSdttqpm6LI"
+SERVER_URL = "https://pos-licensing-server-uroy.onrender.com"
 
-init_db()
+# --- قواعد سيرفر الفلاسك (API) ---
+@app.route('/')
+def home():
+    return "Licensing Server is Running Live!"
 
-@app.route('/check_license', methods=['POST'])
-def check_license():
-    data = request.json
-    client_id = data.get('client_id')
-    branch_name = data.get('branch_name', 'الإخوة ماركت')
+# --- أودية وتفاعل بوت تليجرام ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "👋 أهلاً بك في نظام إدارة اشتراكات الكاشير!\n\n"
+        "الأوامر المتاحة:\n"
+        "• /branches - عرض الفروع وحالات التجديد\n"
+        "• /renew <client_id> - تجديد اشتراك لفرع معين"
+    )
 
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT expiry_date FROM clients WHERE client_id = ?", (client_id,))
-    row = cursor.fetchone()
+async def get_branches(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        res = requests.get(f"{SERVER_URL}/branches", timeout=5)
+        data = res.json()
+        if not data:
+            await update.message.reply_text("لا يوجد عملاء مسجلين حالياً.")
+            return
 
-    now = datetime.now()
+        msg = "📊 **قائمة اشتراكات الفروع:**\n\n"
+        for client in data:
+            status = "🟢 نشط" if client.get('is_active') else "🔴 منتهي"
+            msg += f"🏢 **الفرع:** {client.get('branch_name', 'غير مسمى')}\n"
+            msg += f"🔑 **ID:** `{client.get('client_id')}`\n"
+            msg += f"الحالة: {status}\n"
+            msg += "-----------------------------------\n"
+            
+        await update.message.reply_text(msg, parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"خطأ في جلب الفروع: {e}")
 
-    if not row:
-        # تسجيل العميل لأول مرة لتجربة 10 دقائق مثلاً أو شهر
-        default_expiry = now + timedelta(days=30)
-        cursor.execute("INSERT INTO clients VALUES (?, ?, ?)", (client_id, branch_name, default_expiry.isoformat()))
-        conn.commit()
-        expiry_date = default_expiry
-    else:
-        expiry_date = datetime.fromisoformat(row[0])
+async def renew_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("يرجى كتابة الـ Client ID، مثال:\n`/renew 123456`", parse_mode="Markdown")
+        return
 
-    conn.close()
+    client_id = context.args[0]
+    context.user_data['renew_client_id'] = client_id
 
-    time_left = expiry_date - now
-    is_active = time_left.total_seconds() > 0
+    keyboard = [
+        [
+            InlineKeyboardButton("10 دقائق", callback_data="renew_10_دقيقة"),
+            InlineKeyboardButton("ساعة", callback_data="renew_1_ساعة")
+        ],
+        [
+            InlineKeyboardButton("يوم", callback_data="renew_1_يوم"),
+            InlineKeyboardButton("أسبوع", callback_data="renew_1_أسبوع")
+        ],
+        [
+            InlineKeyboardButton("شهر", callback_data="renew_1_شهر"),
+            InlineKeyboardButton("3 شهور", callback_data="renew_3_شهر")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(f"اختر مدة التجديد للعميل `{client_id}`:", reply_markup=reply_markup, parse_mode="Markdown")
 
-    return jsonify({
-        "status": "active" if is_active else "expired",
-        "seconds_left": int(time_left.total_seconds()),
-        "expiry_date": expiry_date.strftime("%Y-%m-%d %H:%M:%S")
-    })
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
 
-@app.route('/renew', methods=['POST'])
-def renew():
-    data = request.json
-    client_id = data.get('client_id')
-    unit = data.get('unit')  # minutes, hours, days, weeks, months
-    amount = int(data.get('amount', 1))
+    data = query.data.split('_')
+    amount = int(data[1])
+    unit = data[2]
+    client_id = context.user_data.get('renew_client_id')
 
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT expiry_date FROM clients WHERE client_id = ?", (client_id,))
-    row = cursor.fetchone()
+    if not client_id:
+        await query.edit_message_text("حدث خطأ، اطلب الأمر مجدداً: /renew")
+        return
 
-    now = datetime.now()
-    current_expiry = datetime.fromisoformat(row[0]) if row and datetime.fromisoformat(row[0]) > now else now
+    payload = {"client_id": client_id, "amount": amount, "unit": unit}
 
-    if unit == 'دقيقة':
-        new_expiry = current_expiry + timedelta(minutes=amount)
-    elif unit == 'ساعة':
-        new_expiry = current_expiry + timedelta(hours=amount)
-    elif unit == 'يوم':
-        new_expiry = current_expiry + timedelta(days=amount)
-    elif unit == 'أسبوع':
-        new_expiry = current_expiry + timedelta(weeks=amount)
-    elif unit == 'شهر':
-        new_expiry = current_expiry + timedelta(days=amount * 30)
+    try:
+        res = requests.post(f"{SERVER_URL}/renew", json=payload, timeout=5)
+        res_data = res.json()
 
-    cursor.execute("UPDATE clients SET expiry_date = ? WHERE client_id = ?", (new_expiry.isoformat(), client_id))
-    conn.commit()
-    conn.close()
+        if res_data.get("status") == "success":
+            await query.edit_message_text(
+                f"✅ **تم التجديد بنجاح!**\n\n"
+                f"🔑 العميل: `{client_id}`\n"
+                f"➕ المضافة: {amount} {unit}\n"
+                f"📅 الانتهاء الجديد: {res_data.get('new_expiry')}",
+                parse_mode="Markdown"
+            )
+        else:
+            await query.edit_message_text("❌ فشلت عملية التجديد.")
+    except Exception as e:
+        await query.edit_message_text(f"خطأ: {e}")
 
-    return jsonify({"status": "success", "new_expiry": new_expiry.strftime("%Y-%m-%d %H:%M:%S")})
+def run_telegram_bot():
+    logging.basicConfig(level=logging.INFO)
+    bot_app = Application.builder().token(TELEGRAM_TOKEN).build()
+    bot_app.add_handler(CommandHandler("start", start))
+    bot_app.add_handler(CommandHandler("branches", get_branches))
+    bot_app.add_handler(CommandHandler("renew", renew_command))
+    bot_app.add_handler(CallbackQueryHandler(button_handler))
+    
+    bot_app.run_polling(drop_pending_updates=True)
 
-@app.route('/branches', methods=['GET'])
-def get_branches():
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT client_id, branch_name, expiry_date FROM clients")
-    rows = cursor.fetchall()
-    conn.close()
+# تشغيل البوت في الخلفية عند بدء السيرفر
+threading.Thread(target=run_telegram_bot, daemon=True).start()
 
-    now = datetime.now()
-    result = []
-    for row in rows:
-        exp = datetime.fromisoformat(row[2])
-        diff = exp - now
-        result.append({
-            "client_id": row[0],
-            "branch_name": row[1],
-            "days_left": max(0, diff.days),
-            "is_active": diff.total_seconds() > 0
-        })
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
 
     return jsonify(result)
 
