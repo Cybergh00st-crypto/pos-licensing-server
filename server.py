@@ -6,33 +6,7 @@ app = Flask(__name__)
 
 # التوكن ورابط السيرفر
 TELEGRAM_TOKEN = "8977841816:AAHTSoTngUCO6zUhE-zESC56jSdttqpm6LI"
-TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 SERVER_URL = "https://pos-licensing-server-uroy.onrender.com"
-
-def send_telegram_msg(chat_id, text, reply_markup=None):
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "Markdown"
-    }
-    if reply_markup:
-        payload["reply_markup"] = reply_markup
-    try:
-        requests.post(f"{TELEGRAM_API}/sendMessage", json=payload, timeout=5)
-    except Exception as e:
-        print("Error sending message:", e)
-
-def edit_telegram_msg(chat_id, message_id, text):
-    payload = {
-        "chat_id": chat_id,
-        "message_id": message_id,
-        "text": text,
-        "parse_mode": "Markdown"
-    }
-    try:
-        requests.post(f"{TELEGRAM_API}/editMessageText", json=payload, timeout=5)
-    except Exception as e:
-        print("Error editing message:", e)
 
 # --- سيرفر الفلاسك (API) ---
 @app.route('/')
@@ -44,45 +18,62 @@ def home():
 def webhook():
     data = request.get_json(force=True, silent=True)
     if not data:
-        return 'bad request', 400
+        return jsonify({}), 200
 
-    # التعامل مع الرسائل العادية
+    # التعامل مع الرسائل النصية العادية
     if "message" in data:
         msg = data["message"]
         chat_id = msg["chat"]["id"]
         text = msg.get("text", "")
 
         if text.startswith("/start"):
-            reply = (
+            reply_text = (
                 "👋 **أهلاً بك في نظام إدارة اشتراكات الكاشير!**\n\n"
                 "الأوامر المتاحة:\n"
                 "• `/branches` - عرض الفروع وحالات التجديد\n"
                 "• `/renew <client_id>` - تجديد اشتراك لفرع معين"
             )
-            send_telegram_msg(chat_id, reply)
+            return jsonify({
+                "method": "sendMessage",
+                "chat_id": chat_id,
+                "text": reply_text,
+                "parse_mode": "Markdown"
+            })
 
         elif text.startswith("/branches"):
             try:
                 res = requests.get(f"{SERVER_URL}/branches", timeout=5)
                 b_data = res.json()
                 if not b_data:
-                    send_telegram_msg(chat_id, "لا يوجد عملاء مسجلين حالياً.")
+                    reply_text = "لا يوجد عملاء مسجلين حالياً."
                 else:
-                    reply = "📊 **قائمة اشتراكات الفروع:**\n\n"
+                    reply_text = "📊 **قائمة اشتراكات الفروع:**\n\n"
                     for client in b_data:
                         status = "🟢 نشط" if client.get('is_active') else "🔴 منتهي"
-                        reply += f"🏢 **الفرع:** {client.get('branch_name', 'غير مسمى')}\n"
-                        reply += f"🔑 **ID:** `{client.get('client_id')}`\n"
-                        reply += f"الحالة: {status}\n"
-                        reply += "-----------------------------------\n"
-                    send_telegram_msg(chat_id, reply)
+                        reply_text += f"🏢 **الفرع:** {client.get('branch_name', 'غير مسمى')}\n"
+                        reply_text += f"🔑 **ID:** `{client.get('client_id')}`\n"
+                        reply_text += f"الحالة: {status}\n"
+                        reply_text += "-----------------------------------\n"
             except Exception as e:
-                send_telegram_msg(chat_id, f"خطأ في جلب الفروع: {e}")
+                reply_text = f"خطأ في جلب الفروع: {e}"
+
+            return jsonify({
+                "method": "sendMessage",
+                "chat_id": chat_id,
+                "text": reply_text,
+                "parse_mode": "Markdown"
+            })
 
         elif text.startswith("/renew"):
             parts = text.split()
             if len(parts) < 2:
-                send_telegram_msg(chat_id, "يرجى كتابة الـ Client ID مع الأمر، مثال:\n`/renew 123456`")
+                reply_text = "يرجى كتابة الـ Client ID مع الأمر، مثال:\n`/renew 123456`"
+                return jsonify({
+                    "method": "sendMessage",
+                    "chat_id": chat_id,
+                    "text": reply_text,
+                    "parse_mode": "Markdown"
+                })
             else:
                 client_id = parts[1]
                 keyboard = {
@@ -101,9 +92,15 @@ def webhook():
                         ]
                     ]
                 }
-                send_telegram_msg(chat_id, f"اختر مدة التجديد للعميل `{client_id}`:", reply_markup=keyboard)
+                return jsonify({
+                    "method": "sendMessage",
+                    "chat_id": chat_id,
+                    "text": f"اختر مدة التجديد للعميل `{client_id}`:",
+                    "reply_markup": keyboard,
+                    "parse_mode": "Markdown"
+                })
 
-    # التعامل مع أزرار Inline
+    # التعامل مع الضغط على أزرار Inline
     elif "callback_query" in data:
         cb = data["callback_query"]
         chat_id = cb["message"]["chat"]["id"]
@@ -121,25 +118,26 @@ def webhook():
                 res_data = res.json()
 
                 if res_data.get("status") == "success":
-                    text = (
+                    reply_text = (
                         f"✅ **تم التجديد بنجاح!**\n\n"
                         f"🔑 العميل: `{client_id}`\n"
                         f"➕ المضافة: {amount} {unit}\n"
                         f"📅 الانتهاء الجديد: {res_data.get('new_expiry')}"
                     )
                 else:
-                    text = "❌ فشلت عملية التجديد."
-                edit_telegram_msg(chat_id, msg_id, text)
+                    reply_text = "❌ فشلت عملية التجديد."
             except Exception as e:
-                edit_telegram_msg(chat_id, msg_id, f"خطأ: {e}")
+                reply_text = f"خطأ: {e}"
 
-    return 'ok', 200
+            return jsonify({
+                "method": "editMessageText",
+                "chat_id": chat_id,
+                "message_id": msg_id,
+                "text": reply_text,
+                "parse_mode": "Markdown"
+            })
 
-# تفعيل الـ Webhook عند بداية تشغيل الملف
-try:
-    requests.get(f"{TELEGRAM_API}/setWebhook?url={SERVER_URL}/webhook", timeout=10)
-except Exception as e:
-    print("Webhook Setup Error:", e)
+    return jsonify({}), 200
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
