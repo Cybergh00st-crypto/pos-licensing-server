@@ -4,7 +4,7 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# التوكن الجديد من BotFather
+# التوكن الصحيح بدون أي مسافات
 TELEGRAM_TOKEN = "8977841816:AAHf2vw1zUMNCHR-Ou1MWuvxL5LVjF1m3d4"
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 SERVER_URL = "https://pos-licensing-server-uroy.onrender.com"
@@ -133,6 +133,17 @@ def webhook():
                 edit_telegram_msg(chat_id, msg_id, f"خطأ: {e}")
 
     return 'ok', 200
+
+# تفعيل الـ Webhook أوتوماتيكياً عبر السيرفر نفسه عند بدء التشغيل
+def init_webhook():
+    try:
+        url = f"{TELEGRAM_API}/setWebhook?url={SERVER_URL}/webhook&drop_pending_updates=true"
+        r = requests.get(url, timeout=10)
+        print("Automatic Webhook Setup Status:", r.json())
+    except Exception as e:
+        print("Webhook auto-setup failed:", e)
+
+init_webhook()
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
