@@ -1,7 +1,4 @@
 import os
-import asyncio
-import threading
-import logging
 import requests
 from flask import Flask, request, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -9,14 +6,36 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 
 app = Flask(__name__)
 
-# التوكن ورابط السيرفر
+# التوكن ورابط السيرفر على Render
 TELEGRAM_TOKEN = "8977841816:AAHTSoTngUCO6zUhE-zESC56jSdttqpm6LI"
 SERVER_URL = "https://pos-licensing-server-uroy.onrender.com"
+
+# تهيئة تطبيق تليجرام
+bot_app = Application.builder().token(TELEGRAM_TOKEN).build()
+
+# --- دالة تفعيل الـ Webhook تلقائياً ---
+def set_telegram_webhook():
+    webhook_url = f"{SERVER_URL}/webhook"
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook?url={webhook_url}"
+    try:
+        res = requests.get(url, timeout=10)
+        print("Webhook Setup Response:", res.json())
+    except Exception as e:
+        print("Webhook Setup Error:", e)
 
 # --- سيرفر الفلاسك (API) ---
 @app.route('/')
 def home():
-    return "Licensing Server is Running Live!"
+    return "Licensing Server & Telegram Bot are Running Live!"
+
+# استقبال رسائل تليجرام عبر Webhook
+@app.route('/webhook', methods=['POST'])
+async def webhook():
+    if request.method == 'POST':
+        update = Update.de_json(request.get_json(force=True), bot_app.bot)
+        await bot_app.process_update(update)
+        return 'ok', 200
+    return 'bad request', 400
 
 # --- أوامر وتفاعل بوت تليجرام ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -104,24 +123,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await query.edit_message_text(f"خطأ: {e}")
 
-def run_bot_loop():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    
-    bot_app = Application.builder().token(TELEGRAM_TOKEN).build()
-    bot_app.add_handler(CommandHandler("start", start))
-    bot_app.add_handler(CommandHandler("branches", get_branches))
-    bot_app.add_handler(CommandHandler("renew", renew_command))
-    bot_app.add_handler(CallbackQueryHandler(button_handler))
+# تسجيل الـ Handlers في تطبيق البوت
+bot_app.add_handler(CommandHandler("start", start))
+bot_app.add_handler(CommandHandler("branches", get_branches))
+bot_app.add_handler(CommandHandler("renew", renew_command))
+bot_app.add_handler(CallbackQueryHandler(button_handler))
 
-    loop.run_until_complete(bot_app.initialize())
-    loop.run_until_complete(bot_app.updater.start_polling(drop_pending_updates=True))
-    loop.run_until_complete(bot_app.start())
-    loop.run_forever()
+# تفعيل الـ Webhook فور تحميل الملف
+set_telegram_webhook()
 
-# تشغيل البوت في Background Thread بـ Loop مستقل
-threading.Thread(target=run_bot_loop, daemon=True).start()
-
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
