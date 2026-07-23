@@ -17,7 +17,7 @@ SERVER_URL = "https://pos-licensing-server-uroy.onrender.com"
 def home():
     return "Licensing Server is Running Live!"
 
-# --- أودية وتفاعل بوت تليجرام ---
+# --- أوامر وتفاعل بوت تليجرام ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 أهلاً بك في نظام إدارة اشتراكات الكاشير!\n\n"
@@ -117,9 +117,5 @@ def run_telegram_bot():
 threading.Thread(target=run_telegram_bot, daemon=True).start()
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
-
-    return jsonify(result)
-
-if __name__ == '__main__':
-    app.run(port=5000)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
